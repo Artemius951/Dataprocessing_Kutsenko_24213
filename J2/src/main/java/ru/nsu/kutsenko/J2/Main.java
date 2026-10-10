@@ -18,18 +18,21 @@ public class Main {
             return;
         }
 
-        AtomicLong stepCounter = new AtomicLong();
-
         Thread[] workers =
             new Thread[Config.WORKER_COUNT];
 
+        AtomicLong[] stepCounters =
+            new AtomicLong[Config.WORKER_COUNT];
+
         for (int i = 0; i < workers.length; i++) {
+            stepCounters[i] = new AtomicLong();
+
             workers[i] = new Thread(
                 new SortWorker(
                     list,
                     Config.DELAY_BETWEEN_STEPS,
                     Config.DELAY_BETWEEN_PASSES,
-                    stepCounter
+                    stepCounters[i]
                 ),
                 "sorter-" + i
             );
@@ -44,9 +47,24 @@ public class Main {
         }
 
         System.out.println();
+
+        long totalSteps = 0;
+
+        for (int i = 0; i < stepCounters.length; i++) {
+            long threadSteps = stepCounters[i].get();
+            totalSteps += threadSteps;
+
+            System.out.println(
+                "Thread sorter-" + i
+                    + " performed "
+                    + threadSteps
+                    + " steps."
+            );
+        }
+
         System.out.println(
-            "The final number of steps: "
-                + stepCounter.get()
+            "Total number of steps: "
+                + totalSteps
         );
     }
 
