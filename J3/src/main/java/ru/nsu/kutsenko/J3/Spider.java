@@ -7,79 +7,62 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class Spider {
 
     private final HttpClientService httpClient;
 
-    private final Set<String> visited =
-        ConcurrentHashMap.newKeySet();
-
-    private final List<String> messages =
-        Collections.synchronizedList(new ArrayList<>());
-
-    private final AtomicInteger pendingTasks =
-        new AtomicInteger(0);
-
-    private final Object completionLock = new Object();
-
-    private ExecutorService executor;
-
     public Spider(String host, int port) {
         this.httpClient = new HttpClientService(host, port);
     }
 
     public List<String> crawl() throws InterruptedException {
-        executor = java.util.concurrent.Executors
-            .newVirtualThreadPerTaskExecutor();
-
-        try {
-            submit("/");
-            waitUntilFinished();
+        try (CrawlContext context = new CrawlContext()) {
+            submit("/", context);
+            waitUntilFinished(context);
 
             List<String> result;
 
-            synchronized (messages) {
-                result = new ArrayList<>(messages);
+            synchronized (context.messages) {
+                result = new ArrayList<>(context.messages);
             }
 
             Collections.sort(result);
             return result;
-
-        } finally {
-            executor.close();
         }
     }
 
-    private void submit(String path) {
-
-        if (!visited.add(path)) {
+    private void submit(String path, CrawlContext context) {
+        if (!context.visited.add(path)) {
             return;
         }
 
-        pendingTasks.incrementAndGet();
+        context.pendingTasks.incrementAndGet();
 
-        executor.submit(() -> {
+        context.executor.submit(() -> {
             try {
-                process(path);
+                process(path, context);
             } finally {
-                taskFinished();
+                taskFinished(context);
             }
         });
     }
 
-    private void process(String path) {
+    private void process(String path, CrawlContext context) {
         try {
             ServerResponse response = httpClient.get(path);
 
             if (response.message() != null) {
-                messages.add(response.message());
+                context.messages.add(response.message());
             }
 
             if (response.successors() != null) {
                 for (String successor : response.successors()) {
-                    submit(successor);
+                    if (successor != null) {
+                        submit(successor, context);
+                    }
                 }
             }
 
@@ -93,26 +76,52 @@ public class Spider {
             Thread.currentThread().interrupt();
 
             System.err.println(
-                "The thread was interrupted during processing. " + path
+                "The thread was interrupted during processing. "
+                    + path
             );
         }
     }
 
-    private void taskFinished() {
-        int remaining = pendingTasks.decrementAndGet();
+    private void taskFinished(CrawlContext context) {
+        int remaining =
+            context.pendingTasks.decrementAndGet();
 
         if (remaining == 0) {
-            synchronized (completionLock) {
-                completionLock.notifyAll();
+            synchronized (context.completionLock) {
+                context.completionLock.notifyAll();
             }
         }
     }
 
-    private void waitUntilFinished() throws InterruptedException {
-        synchronized (completionLock) {
-            while (pendingTasks.get() > 0) {
-                completionLock.wait();
+    private void waitUntilFinished(CrawlContext context)
+        throws InterruptedException {
+
+        synchronized (context.completionLock) {
+            while (context.pendingTasks.get() > 0) {
+                context.completionLock.wait();
             }
+        }
+    }
+
+    private static class CrawlContext implements AutoCloseable {
+
+        private final ExecutorService executor =
+            Executors.newVirtualThreadPerTaskExecutor();
+
+        private final Set<String> visited =
+            ConcurrentHashMap.newKeySet();
+
+        private final List<String> messages =
+            Collections.synchronizedList(new ArrayList<>());
+
+        private final AtomicInteger pendingTasks =
+            new AtomicInteger(0);
+
+        private final Object completionLock = new Object();
+
+        @Override
+        public void close() {
+            executor.close();
         }
     }
 }
